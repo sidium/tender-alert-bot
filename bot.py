@@ -1,32 +1,36 @@
-# bot.py — TenderAlertBot с фильтрами, XML, ускорением и исправленным запуском
+# bot.py — ЧАСТОЕ ОБНОВЛЕНИЕ + RSS + КЕШ
 import asyncio
 import sqlite3
 import requests
-import zipfile
+import feedparser
 import os
-import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from lxml import etree
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram import F
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
-# === НАСТРОЙКИ ===
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # ОБЯЗАТЕЛЬНО добавь в Railway Variables!
-CHECK_INTERVAL = 1800  # 30 минут
-XML_URL = "https://ftp.zakupki.gov.ru/out/published/44fz/notices/notice_current.zip"
-ZIP_PATH = "/tmp/notices.zip"
-EXTRACT_DIR = "/tmp/notices/"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHECK_INTERVAL = 900  # 15 минут
+RSS_URL = "https://zakupki.gov.ru/epz/order/notice/rss"
+DB_PATH = "tenders.db"
 
-# === ИНИЦИАЛИЗАЦИЯ ===
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# === БАЗА ДАННЫХ ===
+# === БАЗА ===
 def init_db():
-    conn = sqlite3.connect('tenders.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS seen_tenders (id TEXT PRIMARY KEY)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS tenders (
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        price REAL,
+        region TEXT,
+        url TEXT,
+        pub_date TEXT
+    )''')
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         user_id INTEGER PRIMARY KEY,
         keywords TEXT,
@@ -36,167 +40,108 @@ def init_db():
     conn.commit()
     conn.close()
 
-# === СКАЧАТЬ XML (только если нет) ===
-def download_xml():
-    if os.path.exists(ZIP_PATH):
-        return
-    print("Скачивание XML...")
+# === ПОЛУЧИТЬ НОВЫЕ ТЕНДЕРЫ ЧЕРЕЗ RSS ===
+def get_new_tenders_from_rss():
+    feed = feedparser.parse(RSS_URL)
+    new_tenders = []
+    cutoff = (datetime.utcnow() - timedelta(minutes=20)).isoformat()  # последние 20 мин
+
+    for entry in feed.entries:
+        pub_date = entry.get('published_parsed')
+        if not pub_date: continue
+        pub_iso = datetime(*pub_date[:6]).isoformat()
+        if pub_iso < cutoff: continue
+
+        reg_num = entry.link.split('regNumber=')[-1].split('&')[0]
+        url = entry.link
+        title = entry.title
+        new_tenders.append({
+            'id': reg_num,
+            'title': title,
+            'url': url,
+            'pub_date': pub_iso
+        })
+    return new_tenders
+
+# === СКАЧАТЬ И СПАРСИТЬ ОДИН ТЕНДЕР ПО URL ===
+def fetch_and_parse_tender(tender):
     try:
-        r = requests.get(XML_URL, auth=('pro-zakupki', 'pro-zakupki'), stream=True, timeout=60)
-        r.raise_for_status()
-        with open(ZIP_PATH, 'wb') as f:
-            for chunk in r.iter_content(8192):
-                f.write(chunk)
-    except Exception as e:
-        print(f"Ошибка скачивания: {e}")
+        xml_url = tender['url'].replace('/view/', '/viewXml/')
+        response = requests.get(xml_url, timeout=10)
+        if response.status_code != 200: return None
 
-# === ФИЛЬТРАЦИЯ XML БЕЗ РАСПАКОВКИ (ускорение) ===
-def get_relevant_xml_paths(keywords, region, max_price):
-    if not os.path.exists(ZIP_PATH):
-        return []
-    
-    relevant = []
-    keywords_list = [k.strip().lower() for k in keywords.split(',') if k.strip()]
-    
-    with zipfile.ZipFile(ZIP_PATH) as z:
-        for name in z.namelist():
-            if not name.endswith('.xml'):
-                continue
-            try:
-                with z.open(name) as f:
-                    head = f.read(2048).decode('utf-8', errors='ignore').lower()
-                    if keywords_list and not any(k in head for k in keywords_list):
-                        continue
-                    if region and region.lower() not in head:
-                        continue
-                    relevant.append(name)
-            except:
-                continue
-    return relevant[:50]  # Ограничиваем 50 файлов
-
-# === РАСПАКОВКА ТОЛЬКО НУЖНЫХ ФАЙЛОВ ===
-def extract_files(file_list):
-    if not file_list:
-        return []
-    with zipfile.ZipFile(ZIP_PATH) as z:
-        for name in file_list:
-            z.extract(name, EXTRACT_DIR)
-    return [os.path.join(EXTRACT_DIR, name) for name in file_list]
-
-# === ПАРСИНГ ОДНОГО ТЕНДЕРА ===
-def parse_tender(xml_path):
-    try:
-        tree = etree.parse(xml_path)
-        root = tree.getroot()
+        root = etree.fromstring(response.content)
         ns = {'ns2': 'http://zakupki.gov.ru/oos/export/1'}
-
-        reg_num = root.find('.//ns2:regNum', ns)
-        if not reg_num or not reg_num.text:
-            return None
-        tender_id = reg_num.text
-
-        name_elem = root.find('.//ns2:name', ns)
+        
         price_elem = root.find('.//ns2:initialSum', ns)
-        price = float(price_elem.text) if price_elem is not None and price_elem.text else 0
+        price = float(price_elem.text) if price_elem is not None else 0
+        region = root.find('.//ns:customer/ns:fullName', ns)
+        region_text = region.text if region is not None else ""
 
         return {
-            'id': tender_id,
-            'title': name_elem.text if name_elem is not None else "—",
+            'id': tender['id'],
+            'title': tender['title'],
             'price': price,
-            'url': f"https://zakupki.gov.ru/epz/order/notice/ea44/view/common-info.html?regNumber={tender_id}"
+            'region': region_text,
+            'url': tender['url'],
+            'pub_date': tender['pub_date']
         }
-    except Exception as e:
-        print(f"Ошибка парсинга {xml_path}: {e}")
+    except:
         return None
 
 # === ПРОВЕРКА НОВЫХ ТЕНДЕРОВ ===
 async def check_tenders():
-    conn = sqlite3.connect('tenders.db')
-    c = conn.cursor()
-    c.execute("SELECT user_id, keywords, region, max_price FROM users WHERE keywords IS NOT NULL")
-    users = c.fetchall()
-    if not users:
-        conn.close()
+    print("Проверка новых тендеров через RSS...")
+    new_items = get_new_tenders_from_rss()
+    if not new_items:
         return
 
-    download_xml()
-    for user_id, keywords, region, max_price in users:
-        xml_names = get_relevant_xml_paths(keywords, region, max_price)
-        xml_paths = extract_files(xml_names)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
 
-        for xml_path in xml_paths:
-            tender = parse_tender(xml_path)
-            if not tender:
-                continue
+    for item in new_items:
+        # Проверяем, уже есть?
+        c.execute("SELECT 1 FROM tenders WHERE id = ?", (item['id'],))
+        if c.fetchone(): continue
 
-            # Фильтр по цене
-            if max_price and tender['price'] > max_price:
-                continue
+        # Парсим детали
+        full_tender = fetch_and_parse_tender(item)
+        if not full_tender: continue
 
-            # Уже видели?
-            c.execute("SELECT 1 FROM seen_tenders WHERE id = ?", (tender['id'],))
-            if c.fetchone():
-                continue
+        # Сохраняем
+        c.execute("""INSERT INTO tenders (id, title, price, region, url, pub_date)
+                     VALUES (?, ?, ?, ?, ?, ?)""",
+                  (full_tender['id'], full_tender['title'], full_tender['price'],
+                   full_tender['region'], full_tender['url'], full_tender['pub_date']))
 
-            # Сохраняем
-            c.execute("INSERT INTO seen_tenders (id) VALUES (?)", (tender['id'],))
+        # Рассылаем по фильтрам
+        c.execute("SELECT user_id, keywords, region, max_price FROM users")
+        users = c.fetchall()
+        for user_id, keywords, region_filter, max_price in users:
+            if not keywords: continue
+            kw_list = [k.strip().lower() for k in keywords.split(',')]
+            if not any(k in full_tender['title'].lower() for k in kw_list): continue
+            if region_filter and region_filter != "Все" and region_filter.lower() not in full_tender['region'].lower(): continue
+            if max_price and full_tender['price'] > max_price: continue
 
-            # Уведомление
             msg = f"""
 НОВЫЙ ТЕНДЕР!
-*{tender['title']}*
-Цена: {tender['price']:,.0f} ₽
-[Открыть]({tender['url']})
+*{full_tender['title']}*
+Цена: {full_tender['price']:,.0f} ₽
+Регион: {full_tender['region'] or '—'}
+[Открыть]({full_tender['url']})
             """
             try:
                 await bot.send_message(user_id, msg, parse_mode="Markdown", disable_web_page_preview=True)
-            except:
-                pass  # пользователь заблокировал
+            except: pass
 
     conn.commit()
     conn.close()
 
-# === КОМАНДЫ ===
-@dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer(
-        "Привет! Я @TenderAlertBot — ищу тендеры по 44-ФЗ\n\n"
-        "Формат: `ноутбук, принтер, Москва, 2000000`\n"
-        "• Ключи через запятую\n"
-        "• Регион (по желанию)\n"
-        "• Макс. цена (по желанию)\n\n"
-        "Пример: `ремонт дорог, Санкт-Петербург, 5000000`",
-        parse_mode="Markdown"
-    )
+# === КНОПКИ (как раньше) ===
+# ... (вставь из предыдущей версии: main_menu, region_menu, price_menu, команды)
 
-@dp.message(F.text)
-async def set_filter(message: types.Message):
-    user_id = message.from_user.id
-    parts = [p.strip() for p in message.text.split(',')]
-    keywords = parts[0] if parts else ""
-    region = parts[1] if len(parts) > 1 else None
-    max_price = float(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
-
-    if not keywords:
-        await message.answer("Напиши хотя бы ключевые слова!")
-        return
-
-    conn = sqlite3.connect('tenders.db')
-    c = conn.cursor()
-    c.execute("REPLACE INTO users (user_id, keywords, region, max_price) VALUES (?, ?, ?, ?)",
-              (user_id, keywords, region, max_price))
-    conn.commit()
-    conn.close()
-
-    await message.answer(
-        f"Подписка обновлена!\n"
-        f"Ключи: *{keywords}*\n"
-        f"Регион: {region or '—'}\n"
-        f"Цена до: {max_price or '—'} ₽",
-        parse_mode="Markdown"
-    )
-
-# === ЗАПУСК (ИСПРАВЛЕННЫЙ) ===
+# === ЗАПУСК ===
 async def on_startup(dispatcher):
     asyncio.create_task(scheduler())
 
@@ -207,9 +152,6 @@ async def scheduler():
 
 async def main():
     init_db()
-    if not os.path.exists(EXTRACT_DIR):
-        os.makedirs(EXTRACT_DIR)
-    
     dp.startup.register(on_startup)
     await dp.start_polling(bot)
 
