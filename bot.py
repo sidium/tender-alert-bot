@@ -1,4 +1,4 @@
-# bot.py — TenderAlertBot: RSS + кнопки + фильтры + без предупреждений
+# bot.py — TenderAlertBot: RSS + кнопки + фильтры + без ошибок
 import asyncio
 import sqlite3
 import requests
@@ -25,25 +25,32 @@ dp = Dispatcher()
 
 # === КНОПКИ ===
 def main_menu():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
-    kb.add(KeyboardButton("Добавить фильтр"))
-    kb.add(KeyboardButton("Мои подписки"))
-    kb.add(KeyboardButton("Отписаться"))
-    return kb
+    keyboard = [
+        [KeyboardButton("Добавить фильтр")],
+        [KeyboardButton("Мои подписки")],
+        [KeyboardButton("Отписаться")]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )
 
 def region_menu():
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("Москва", callback_data="region_Москва"))
-    kb.add(InlineKeyboardButton("Санкт-Петербург", callback_data="region_Санкт-Петербург"))
-    kb.add(InlineKeyboardButton("Все регионы", callback_data="region_Все"))
-    return kb
+    keyboard = [
+        [InlineKeyboardButton("Москва", callback_data="region_Москва")],
+        [InlineKeyboardButton("Санкт-Петербург", callback_data="region_Санкт-Петербург")],
+        [InlineKeyboardButton("Все регионы", callback_data="region_Все")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def price_menu():
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("До 1 млн", callback_data="price_1000000"))
-    kb.add(InlineKeyboardButton("До 5 млн", callback_data="price_5000000"))
-    kb.add(InlineKeyboardButton("Без ограничения", callback_data="price_0"))
-    return kb
+    keyboard = [
+        [InlineKeyboardButton("До 1 млн", callback_data="price_1000000")],
+        [InlineKeyboardButton("До 5 млн", callback_data="price_5000000")],
+        [InlineKeyboardButton("Без ограничения", callback_data="price_0")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 # === БАЗА ДАННЫХ ===
 def init_db():
@@ -168,7 +175,7 @@ async def check_tenders():
             try:
                 await bot.send_message(user_id, msg, parse_mode="Markdown", disable_web_page_preview=True)
             except:
-                pass  # пользователь заблокировал
+                pass
 
     conn.commit()
     conn.close()
@@ -185,7 +192,6 @@ async def start(message: types.Message):
 @dp.message(F.text == "Добавить фильтр")
 async def add_filter(message: types.Message):
     await message.answer("Введи ключевые слова (через запятую):")
-    # Сохраняем состояние (упрощённо через глобальный словарь)
     dp["pending_keywords"] = dp.get("pending_keywords", {})
     dp["pending_keywords"][message.from_user.id] = True
 
@@ -229,7 +235,6 @@ async def set_price(callback: types.CallbackQuery):
     conn.commit()
     conn.close()
 
-    # Получаем текущие фильтры
     c.execute("SELECT keywords, region FROM users WHERE user_id = ?", (user_id,))
     row = c.fetchone()
     keywords = row[0] if row else "—"
