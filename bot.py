@@ -1,4 +1,4 @@
-# bot.py — TenderAlertBot: RSS + кнопки + БЕЗ ОШИБОК
+# bot.py — TenderAlertBot: RSS + кнопки + ЛОГИРОВАНИЕ XML + БЕЗ ОШИБОК
 import asyncio
 import sqlite3
 import requests
@@ -69,7 +69,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# === RSS + ПАРСИНГ ===
+# === RSS + ПАРСИНГ С ЛОГИРОВАНИЕМ ===
 def get_new_tenders_from_rss():
     feed = feedparser.parse(RSS_URL)
     new_tenders = []
@@ -96,8 +96,14 @@ def get_new_tenders_from_rss():
 def fetch_and_parse_tender(tender):
     try:
         xml_url = tender['url'].replace('/view/', '/viewXml/')
+        print(f"[INFO] Пытаюсь скачать XML: {xml_url}")
+
         response = requests.get(xml_url, timeout=10)
-        if response.status_code != 200: return None
+        if response.status_code != 200:
+            print(f"[ERROR] Не удалось скачать XML: HTTP {response.status_code} | {xml_url}")
+            return None
+
+        print(f"[SUCCESS] XML успешно скачан: {len(response.content)} байт | {xml_url}")
 
         root = etree.fromstring(response.content)
         ns = {'ns2': 'http://zakupki.gov.ru/oos/export/1'}
@@ -108,6 +114,8 @@ def fetch_and_parse_tender(tender):
         region_elem = root.find('.//ns:customer/ns:fullName', ns)
         region = region_elem.text if region_elem is not None else ""
 
+        print(f"[PARSE] Тендер {tender['id']}: Цена = {price}, Регион = {region}")
+
         return {
             'id': tender['id'],
             'title': tender['title'],
@@ -117,7 +125,7 @@ def fetch_and_parse_tender(tender):
             'pub_date': tender['pub_date']
         }
     except Exception as e:
-        print(f"Ошибка парсинга {tender['id']}: {e}")
+        print(f"[FATAL] Ошибка при обработке {tender['id']}: {e} | URL: {xml_url}")
         return None
 
 # === ПРОВЕРКА ТЕНДЕРОВ ===
@@ -242,7 +250,6 @@ async def set_price(callback: types.CallbackQuery):
 
         conn.commit()
 
-        # УДАЛЁН reply_markup=main_menu()
         await callback.message.edit_text(
             f"Подписка готова!\n"
             f"Ключи: *{keywords}*\n"
