@@ -242,18 +242,18 @@ async def set_price(callback: types.CallbackQuery):
 
         conn.commit()
 
+        # УДАЛЁН reply_markup=main_menu()
         await callback.message.edit_text(
             f"Подписка готова!\n"
             f"Ключи: *{keywords}*\n"
             f"Регион: *{region}*\n"
             f"Цена: *{price_text}*",
-            parse_mode="Markdown",
-            reply_markup=main_menu()
+            parse_mode="Markdown"
         )
     except Exception as e:
         print(f"Ошибка в set_price: {e}")
         try:
-            await callback.message.edit_text("Ошибка. Попробуй снова.", reply_markup=main_menu())
+            await callback.message.edit_text("Ошибка. Попробуй снова.")
         except: pass
     finally:
         conn.close()
