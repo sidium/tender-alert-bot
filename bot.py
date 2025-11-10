@@ -1,4 +1,4 @@
-# bot.py — TenderAlertBot: RSS + кнопки + БЕЗ ОШИБОК С БАЗОЙ
+# bot.py — TenderAlertBot: RSS + кнопки + БЕЗ ОШИБОК
 import asyncio
 import sqlite3
 import requests
@@ -30,11 +30,7 @@ def main_menu():
         [KeyboardButton(text="Мои подписки")],
         [KeyboardButton(text="Отписаться")]
     ]
-    return ReplyKeyboardMarkup(
-        keyboard=keyboard,
-        resize_keyboard=True,
-        one_time_keyboard=False
-    )
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def region_menu():
     keyboard = [
@@ -211,6 +207,7 @@ async def get_keywords(message: types.Message):
 async def set_region(callback: types.CallbackQuery):
     region = callback.data.split("_", 1)[1]
     user_id = callback.from_user.id
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
@@ -255,6 +252,7 @@ async def set_price(callback: types.CallbackQuery):
         )
     except Exception as e:
         print(f"Ошибка в set_price: {e}")
+        await callback.message.edit_text("Ошибка. Попробуй снова.", reply_markup=main_menu())
     finally:
         conn.close()
 
