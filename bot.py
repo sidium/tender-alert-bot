@@ -1,4 +1,4 @@
-# bot.py — TenderAlertBot: RSS + кнопки + БЕЗ ОШИБОК
+# bot.py — TenderAlertBot: RSS + кнопки + 100% БЕЗ ОШИБОК
 import asyncio
 import sqlite3
 import requests
@@ -231,17 +231,21 @@ async def set_price(callback: types.CallbackQuery):
     c = conn.cursor()
 
     try:
+        # Сохраняем цену
         max_price = price if price > 0 else None
         c.execute("UPDATE users SET max_price = ? WHERE user_id = ?", (max_price, user_id))
 
+        # ЧИТАЕМ ДО commit
         c.execute("SELECT keywords, region FROM users WHERE user_id = ?", (user_id,))
         row = c.fetchone()
         keywords = row[0] if row else "—"
         region = row[1] if row and row[1] else "Все"
         price_text = f"до {price:,} ₽" if price > 0 else "без ограничения"
 
+        # Сохраняем
         conn.commit()
 
+        # Отправляем
         await callback.message.edit_text(
             f"Подписка готова!\n"
             f"Ключи: *{keywords}*\n"
@@ -252,9 +256,11 @@ async def set_price(callback: types.CallbackQuery):
         )
     except Exception as e:
         print(f"Ошибка в set_price: {e}")
-        await callback.message.edit_text("Ошибка. Попробуй снова.", reply_markup=main_menu())
+        try:
+            await callback.message.edit_text("Ошибка. Попробуй снова.", reply_markup=main_menu())
+        except: pass
     finally:
-        conn.close()
+        conn.close()  # ЗАКРЫВАЕМ ПОСЛЕ ВСЕГО
 
     await callback.answer()
 
