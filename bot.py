@@ -1,4 +1,4 @@
-# bot.py — TenderAlertBot: RSS + кнопки + фильтры + БЕЗ ОШИБОК
+# bot.py — TenderAlertBot: RSS + кнопки + БЕЗ ОШИБОК С БАЗОЙ
 import asyncio
 import sqlite3
 import requests
@@ -23,7 +23,7 @@ DB_PATH = "tenders.db"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# === КНОПКИ (ИСПРАВЛЕНО) ===
+# === КНОПКИ ===
 def main_menu():
     keyboard = [
         [KeyboardButton(text="Добавить фильтр")],
@@ -52,7 +52,7 @@ def price_menu():
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# === БАЗА ДАННЫХ ===
+# === БАЗА ===
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -133,39 +133,42 @@ async def check_tenders():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
-    for item in new_items:
-        c.execute("SELECT 1 FROM tenders WHERE id = ?", (item['id'],))
-        if c.fetchone(): continue
+    try:
+        for item in new_items:
+            c.execute("SELECT 1 FROM tenders WHERE id = ?", (item['id'],))
+            if c.fetchone(): continue
 
-        full_tender = fetch_and_parse_tender(item)
-        if not full_tender: continue
+            full_tender = fetch_and_parse_tender(item)
+            if not full_tender: continue
 
-        c.execute("""INSERT INTO tenders (id, title, price, region, url, pub_date)
-                     VALUES (?, ?, ?, ?, ?, ?)""",
-                  (full_tender['id'], full_tender['title'], full_tender['price'],
-                   full_tender['region'], full_tender['url'], full_tender['pub_date']))
+            c.execute("""INSERT INTO tenders (id, title, price, region, url, pub_date)
+                         VALUES (?, ?, ?, ?, ?, ?)""",
+                      (full_tender['id'], full_tender['title'], full_tender['price'],
+                       full_tender['region'], full_tender['url'], full_tender['pub_date']))
 
-        c.execute("SELECT user_id, keywords, region, max_price FROM users WHERE keywords IS NOT NULL")
-        users = c.fetchall()
-        for user_id, keywords, region_filter, max_price in users:
-            kw_list = [k.strip().lower() for k in keywords.split(',') if k.strip()]
-            if not any(k in full_tender['title'].lower() for k in kw_list): continue
-            if region_filter and region_filter != "Все" and region_filter.lower() not in full_tender['region'].lower(): continue
-            if max_price and full_tender['price'] > max_price: continue
+            c.execute("SELECT user_id, keywords, region, max_price FROM users WHERE keywords IS NOT NULL")
+            users = c.fetchall()
+            for user_id, keywords, region_filter, max_price in users:
+                kw_list = [k.strip().lower() for k in keywords.split(',') if k.strip()]
+                if not any(k in full_tender['title'].lower() for k in kw_list): continue
+                if region_filter and region_filter != "Все" and region_filter.lower() not in full_tender['region'].lower(): continue
+                if max_price and full_tender['price'] > max_price: continue
 
-            msg = f"""
+                msg = f"""
 НОВЫЙ ТЕНДЕР!
 *{full_tender['title']}*
 Цена: {full_tender['price']:,.0f} ₽
 Регион: {full_tender['region'] or '—'}
 [Открыть]({full_tender['url']})
-            """
-            try:
-                await bot.send_message(user_id, msg, parse_mode="Markdown", disable_web_page_preview=True)
-            except: pass
-
-    conn.commit()
-    conn.close()
+                """
+                try:
+                    await bot.send_message(user_id, msg, parse_mode="Markdown", disable_web_page_preview=True)
+                except: pass
+        conn.commit()
+    except Exception as e:
+        print(f"Ошибка в check_tenders: {e}")
+    finally:
+        conn.close()
 
 # === КОМАНДЫ ===
 @dp.message(Command("start"))
@@ -192,9 +195,14 @@ async def get_keywords(message: types.Message):
     user_id = message.from_user.id
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO users (user_id, keywords) VALUES (?, ?)", (user_id, keywords))
-    conn.commit()
-    conn.close()
+
+    try:
+        c.execute("INSERT OR REPLACE INTO users (user_id, keywords) VALUES (?, ?)", (user_id, keywords))
+        conn.commit()
+    except Exception as e:
+        print(f"Ошибка сохранения ключей: {e}")
+    finally:
+        conn.close()
 
     dp["pending_keywords"].pop(user_id, None)
     await message.answer(f"Ключи: *{keywords}*\nВыбери регион:", parse_mode="Markdown", reply_markup=region_menu())
@@ -205,9 +213,15 @@ async def set_region(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("UPDATE users SET region = ? WHERE user_id = ?", (region, user_id))
-    conn.commit()
-    conn.close()
+
+    try:
+        c.execute("UPDATE users SET region = ? WHERE user_id = ?", (region, user_id))
+        conn.commit()
+    except Exception as e:
+        print(f"Ошибка сохранения региона: {e}")
+    finally:
+        conn.close()
+
     await callback.message.edit_text(f"Регион: *{region}*\nВыбери цену:", parse_mode="Markdown", reply_markup=price_menu())
     await callback.answer()
 
@@ -215,27 +229,35 @@ async def set_region(callback: types.CallbackQuery):
 async def set_price(callback: types.CallbackQuery):
     price = int(callback.data.split("_", 1)[1])
     user_id = callback.from_user.id
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    max_price = price if price > 0 else None
-    c.execute("UPDATE users SET max_price = ? WHERE user_id = ?", (max_price, user_id))
-    conn.commit()
-    conn.close()
 
-    c.execute("SELECT keywords, region FROM users WHERE user_id = ?", (user_id,))
-    row = c.fetchone()
-    keywords = row[0] if row else "—"
-    region = row[1] if row and row[1] else "Все"
-    price_text = f"до {price:,} ₽" if price > 0 else "без ограничения"
+    try:
+        max_price = price if price > 0 else None
+        c.execute("UPDATE users SET max_price = ? WHERE user_id = ?", (max_price, user_id))
 
-    await callback.message.edit_text(
-        f"Подписка готова!\n"
-        f"Ключи: *{keywords}*\n"
-        f"Регион: *{region}*\n"
-        f"Цена: *{price_text}*",
-        parse_mode="Markdown",
-        reply_markup=main_menu()
-    )
+        c.execute("SELECT keywords, region FROM users WHERE user_id = ?", (user_id,))
+        row = c.fetchone()
+        keywords = row[0] if row else "—"
+        region = row[1] if row and row[1] else "Все"
+        price_text = f"до {price:,} ₽" if price > 0 else "без ограничения"
+
+        conn.commit()
+
+        await callback.message.edit_text(
+            f"Подписка готова!\n"
+            f"Ключи: *{keywords}*\n"
+            f"Регион: *{region}*\n"
+            f"Цена: *{price_text}*",
+            parse_mode="Markdown",
+            reply_markup=main_menu()
+        )
+    except Exception as e:
+        print(f"Ошибка в set_price: {e}")
+    finally:
+        conn.close()
+
     await callback.answer()
 
 @dp.message(F.text == "Мои подписки")
@@ -243,30 +265,41 @@ async def my_subs(message: types.Message):
     user_id = message.from_user.id
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT keywords, region, max_price FROM users WHERE user_id = ?", (user_id,))
-    row = c.fetchone()
-    conn.close()
-    if not row or not row[0]:
-        await message.answer("У тебя нет подписок.", reply_markup=main_menu())
-        return
-    price = f"до {int(row[2]):,} ₽" if row[2] else "без ограничения"
-    await message.answer(
-        f"Твои фильтры:\n"
-        f"Ключи: *{row[0]}*\n"
-        f"Регион: *{row[1] or 'Все'}*\n"
-        f"Цена: *{price}*",
-        parse_mode="Markdown",
-        reply_markup=main_menu()
-    )
+
+    try:
+        c.execute("SELECT keywords, region, max_price FROM users WHERE user_id = ?", (user_id,))
+        row = c.fetchone()
+        if not row or not row[0]:
+            await message.answer("У тебя нет подписок.", reply_markup=main_menu())
+            return
+        price = f"до {int(row[2]):,} ₽" if row[2] else "без ограничения"
+        await message.answer(
+            f"Твои фильтры:\n"
+            f"Ключи: *{row[0]}*\n"
+            f"Регион: *{row[1] or 'Все'}*\n"
+            f"Цена: *{price}*",
+            parse_mode="Markdown",
+            reply_markup=main_menu()
+        )
+    except Exception as e:
+        print(f"Ошибка в my_subs: {e}")
+    finally:
+        conn.close()
 
 @dp.message(F.text == "Отписаться")
 async def unsubscribe(message: types.Message):
     user_id = message.from_user.id
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+
+    try:
+        c.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        conn.commit()
+    except Exception as e:
+        print(f"Ошибка в отписке: {e}")
+    finally:
+        conn.close()
+
     await message.answer("Подписка удалена.", reply_markup=main_menu())
 
 # === ЗАПУСК ===
