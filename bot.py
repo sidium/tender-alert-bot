@@ -1,4 +1,4 @@
-# bot.py — TenderAlertBot: RSS + кнопки + фильтры + без ошибок
+# bot.py — TenderAlertBot: RSS + кнопки + фильтры + БЕЗ ОШИБОК
 import asyncio
 import sqlite3
 import requests
@@ -23,12 +23,12 @@ DB_PATH = "tenders.db"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# === КНОПКИ ===
+# === КНОПКИ (ИСПРАВЛЕНО) ===
 def main_menu():
     keyboard = [
-        [KeyboardButton("Добавить фильтр")],
-        [KeyboardButton("Мои подписки")],
-        [KeyboardButton("Отписаться")]
+        [KeyboardButton(text="Добавить фильтр")],
+        [KeyboardButton(text="Мои подписки")],
+        [KeyboardButton(text="Отписаться")]
     ]
     return ReplyKeyboardMarkup(
         keyboard=keyboard,
@@ -38,17 +38,17 @@ def main_menu():
 
 def region_menu():
     keyboard = [
-        [InlineKeyboardButton("Москва", callback_data="region_Москва")],
-        [InlineKeyboardButton("Санкт-Петербург", callback_data="region_Санкт-Петербург")],
-        [InlineKeyboardButton("Все регионы", callback_data="region_Все")]
+        [InlineKeyboardButton(text="Москва", callback_data="region_Москва")],
+        [InlineKeyboardButton(text="Санкт-Петербург", callback_data="region_Санкт-Петербург")],
+        [InlineKeyboardButton(text="Все регионы", callback_data="region_Все")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def price_menu():
     keyboard = [
-        [InlineKeyboardButton("До 1 млн", callback_data="price_1000000")],
-        [InlineKeyboardButton("До 5 млн", callback_data="price_5000000")],
-        [InlineKeyboardButton("Без ограничения", callback_data="price_0")]
+        [InlineKeyboardButton(text="До 1 млн", callback_data="price_1000000")],
+        [InlineKeyboardButton(text="До 5 млн", callback_data="price_5000000")],
+        [InlineKeyboardButton(text="Без ограничения", callback_data="price_0")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -73,23 +73,20 @@ def init_db():
     conn.commit()
     conn.close()
 
-# === ПОЛУЧИТЬ НОВЫЕ ТЕНДЕРЫ ЧЕРЕЗ RSS ===
+# === RSS + ПАРСИНГ ===
 def get_new_tenders_from_rss():
     feed = feedparser.parse(RSS_URL)
     new_tenders = []
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()  # последние 20 мин
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
 
     for entry in feed.entries:
         pub_date = entry.get('published_parsed')
-        if not pub_date:
-            continue
+        if not pub_date: continue
         pub_iso = datetime(*pub_date[:6], tzinfo=timezone.utc).isoformat()
-        if pub_iso < cutoff:
-            continue
+        if pub_iso < cutoff: continue
 
         reg_num_match = entry.link.split('regNumber=')
-        if len(reg_num_match) < 2:
-            continue
+        if len(reg_num_match) < 2: continue
         reg_num = reg_num_match[1].split('&')[0]
 
         new_tenders.append({
@@ -100,13 +97,11 @@ def get_new_tenders_from_rss():
         })
     return new_tenders
 
-# === СКАЧАТЬ И СПАРСИТЬ ОДИН ТЕНДЕР ===
 def fetch_and_parse_tender(tender):
     try:
         xml_url = tender['url'].replace('/view/', '/viewXml/')
         response = requests.get(xml_url, timeout=10)
-        if response.status_code != 200:
-            return None
+        if response.status_code != 200: return None
 
         root = etree.fromstring(response.content)
         ns = {'ns2': 'http://zakupki.gov.ru/oos/export/1'}
@@ -129,41 +124,34 @@ def fetch_and_parse_tender(tender):
         print(f"Ошибка парсинга {tender['id']}: {e}")
         return None
 
-# === ПРОВЕРКА НОВЫХ ТЕНДЕРОВ ===
+# === ПРОВЕРКА ТЕНДЕРОВ ===
 async def check_tenders():
-    print(f"[{datetime.now(timezone.utc).isoformat()}] Проверка новых тендеров...")
+    print(f"[{datetime.now(timezone.utc).isoformat()}] Проверка...")
     new_items = get_new_tenders_from_rss()
-    if not new_items:
-        return
+    if not new_items: return
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
     for item in new_items:
         c.execute("SELECT 1 FROM tenders WHERE id = ?", (item['id'],))
-        if c.fetchone():
-            continue
+        if c.fetchone(): continue
 
         full_tender = fetch_and_parse_tender(item)
-        if not full_tender:
-            continue
+        if not full_tender: continue
 
         c.execute("""INSERT INTO tenders (id, title, price, region, url, pub_date)
                      VALUES (?, ?, ?, ?, ?, ?)""",
                   (full_tender['id'], full_tender['title'], full_tender['price'],
                    full_tender['region'], full_tender['url'], full_tender['pub_date']))
 
-        # Рассылка
         c.execute("SELECT user_id, keywords, region, max_price FROM users WHERE keywords IS NOT NULL")
         users = c.fetchall()
         for user_id, keywords, region_filter, max_price in users:
             kw_list = [k.strip().lower() for k in keywords.split(',') if k.strip()]
-            if not any(k in full_tender['title'].lower() for k in kw_list):
-                continue
-            if region_filter and region_filter != "Все" and region_filter.lower() not in full_tender['region'].lower():
-                continue
-            if max_price and full_tender['price'] > max_price:
-                continue
+            if not any(k in full_tender['title'].lower() for k in kw_list): continue
+            if region_filter and region_filter != "Все" and region_filter.lower() not in full_tender['region'].lower(): continue
+            if max_price and full_tender['price'] > max_price: continue
 
             msg = f"""
 НОВЫЙ ТЕНДЕР!
@@ -174,13 +162,12 @@ async def check_tenders():
             """
             try:
                 await bot.send_message(user_id, msg, parse_mode="Markdown", disable_web_page_preview=True)
-            except:
-                pass
+            except: pass
 
     conn.commit()
     conn.close()
 
-# === КОМАНДЫ И КНОПКИ ===
+# === КОМАНДЫ ===
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
