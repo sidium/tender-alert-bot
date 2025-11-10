@@ -1,4 +1,4 @@
-# bot.py — TenderAlertBot: RSS + кнопки + ЛОГИРОВАНИЕ XML + БЕЗ ОШИБОК
+# bot.py — TenderAlertBot: RSS + кнопки + АНТИ-РЕСТАРТ
 import asyncio
 import sqlite3
 import requests
@@ -103,7 +103,7 @@ def fetch_and_parse_tender(tender):
             print(f"[ERROR] Не удалось скачать XML: HTTP {response.status_code} | {xml_url}")
             return None
 
-        print(f"[SUCCESS] XML успешно скачан: {len(response.content)} байт | {xml_url}")
+        print(f"[SUCCESS] XML скачан: {len(response.content)} байт")
 
         root = etree.fromstring(response.content)
         ns = {'ns2': 'http://zakupki.gov.ru/oos/export/1'}
@@ -114,7 +114,7 @@ def fetch_and_parse_tender(tender):
         region_elem = root.find('.//ns:customer/ns:fullName', ns)
         region = region_elem.text if region_elem is not None else ""
 
-        print(f"[PARSE] Тендер {tender['id']}: Цена = {price}, Регион = {region}")
+        print(f"[PARSE] {tender['id']}: Цена={price}, Регион={region}")
 
         return {
             'id': tender['id'],
@@ -125,7 +125,7 @@ def fetch_and_parse_tender(tender):
             'pub_date': tender['pub_date']
         }
     except Exception as e:
-        print(f"[FATAL] Ошибка при обработке {tender['id']}: {e} | URL: {xml_url}")
+        print(f"[FATAL] Ошибка: {e}")
         return None
 
 # === ПРОВЕРКА ТЕНДЕРОВ ===
@@ -315,6 +315,7 @@ async def on_startup(dispatcher):
 
 async def scheduler():
     while True:
+        print(f"[{datetime.now(timezone.utc).isoformat()}] Бот жив. Проверка каждые 15 мин...")
         await check_tenders()
         await asyncio.sleep(CHECK_INTERVAL)
 
